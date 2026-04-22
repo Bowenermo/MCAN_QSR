@@ -89,6 +89,27 @@ def _auto_tune_loader_by_vram(__C):
         )
 
 
+def _sanitize_batchnorm_running_stats(net):
+    # Guard against NaN/Inf in BatchNorm buffers, which can collapse eval predictions.
+    model_ref = net.module if isinstance(net, nn.DataParallel) else net
+    sanitized = 0
+    for m in model_ref.modules():
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            if m.running_mean is not None:
+                if not torch.isfinite(m.running_mean).all():
+                    m.running_mean.data = torch.nan_to_num(
+                        m.running_mean.data, nan=0.0, posinf=0.0, neginf=0.0
+                    )
+                    sanitized += 1
+            if m.running_var is not None:
+                if not torch.isfinite(m.running_var).all():
+                    m.running_var.data = torch.nan_to_num(
+                        m.running_var.data, nan=1.0, posinf=1.0, neginf=1.0
+                    ).clamp(min=1e-6)
+                    sanitized += 1
+    return sanitized
+
+
 def train_engine(__C, dataset, dataset_eval=None):
 
     data_size = dataset.data_size
@@ -105,6 +126,9 @@ def train_engine(__C, dataset, dataset_eval=None):
     )
     net.cuda()
     net.train()
+    sanitized_bn_buffers = _sanitize_batchnorm_running_stats(net)
+    if sanitized_bn_buffers > 0:
+        print('[WARN][BN_SANITIZE] reset non-finite BN buffers at init: {}'.format(sanitized_bn_buffers))
 
     if __C.N_GPU > 1:
         net = nn.DataParallel(net, device_ids=__C.DEVICES)
@@ -147,12 +171,21 @@ def train_engine(__C, dataset, dataset_eval=None):
             net.load_state_dict(ckpt_proc(ckpt['state_dict']))
         else:
             net.load_state_dict(ckpt['state_dict'])
+        sanitized_bn_buffers = _sanitize_batchnorm_running_stats(net)
+        if sanitized_bn_buffers > 0:
+            print('[WARN][BN_SANITIZE] reset non-finite BN buffers after resume load: {}'.format(sanitized_bn_buffers))
         start_epoch = ckpt['epoch']
-
-        # Load the optimizer paramters
-        optim = get_optim(__C, net, data_size, ckpt['lr_base'])
-        optim._step = int(data_size / __C.BATCH_SIZE * start_epoch)
-        optim.optimizer.load_state_dict(ckpt['optimizer'])
+        resume_weights_only = bool(getattr(__C, 'RESUME_WEIGHTS_ONLY', False))
+        if resume_weights_only:
+            print('Resume mode: weights-only (optimizer/lr schedule reset from current config)')
+            # Rebuild optimizer from current config (do not inherit ckpt lr_base/optimizer state).
+            optim = get_optim(__C, net, data_size)
+            optim._step = int(data_size / __C.BATCH_SIZE * start_epoch)
+        else:
+            # Load the optimizer parameters from checkpoint (including decayed lr_base state).
+            optim = get_optim(__C, net, data_size, ckpt['lr_base'])
+            optim._step = int(data_size / __C.BATCH_SIZE * start_epoch)
+            optim.optimizer.load_state_dict(ckpt['optimizer'])
         
         if ('ckpt_' + __C.VERSION) not in os.listdir(__C.CKPTS_PATH):
             os.mkdir(__C.CKPTS_PATH + '/ckpt_' + __C.VERSION)
@@ -204,10 +237,12 @@ def train_engine(__C, dataset, dataset_eval=None):
     logfile.close()
 
     # Training script
+    total_nonfinite_substeps = 0
     for epoch in range(start_epoch, __C.MAX_EPOCH):
         model_ref = net.module if isinstance(net, nn.DataParallel) else net
         if hasattr(model_ref, 'on_train_epoch_start'):
             model_ref.on_train_epoch_start(epoch)
+        epoch_nonfinite_substeps = 0
 
         # Save log to file
         logfile = open(
@@ -241,6 +276,7 @@ def train_engine(__C, dataset, dataset_eval=None):
         ) in enumerate(dataloader):
 
             optim.zero_grad()
+            has_finite_backward = False
 
             non_blocking = bool(__C.PIN_MEM)
             frcn_feat_iter = frcn_feat_iter.cuda(non_blocking=non_blocking)
@@ -299,11 +335,27 @@ def train_engine(__C, dataset, dataset_eval=None):
                         # only mean-reduction needs be divided by grad_accu_steps
                         loss /= __C.GRAD_ACCU_STEPS
 
+                if not torch.isfinite(loss).all():
+                    epoch_nonfinite_substeps += 1
+                    total_nonfinite_substeps += 1
+                    sanitized_bn_buffers = _sanitize_batchnorm_running_stats(net)
+                    print(
+                        "\n[WARN][NONFINITE_LOSS] epoch={} step={} accu_step={} skip sub-step | bn_sanitize={}".format(
+                            epoch + 1, step, accu_step, sanitized_bn_buffers
+                        )
+                    )
+                    continue
+
                 scaler.scale(loss).backward()
+                has_finite_backward = True
 
                 loss_scalar = float(loss.detach().float().item()) * __C.GRAD_ACCU_STEPS
                 loss_tmp += loss_scalar
                 loss_sum += loss_scalar
+
+            if not has_finite_backward:
+                # All sub-steps in this batch are non-finite; skip optimizer update.
+                continue
 
             if __C.VERBOSE:
                 if dataset_eval is not None:
@@ -393,6 +445,7 @@ def train_engine(__C, dataset, dataset_eval=None):
             'Epoch: ' + str(epoch_finish) +
             ', Loss: ' + str(loss_sum / data_size) +
             ', Lr: ' + str(optim._rate) + '\n' +
+            'NonFiniteSubSteps(epoch/total): ' + str(epoch_nonfinite_substeps) + '/' + str(total_nonfinite_substeps) + '\n' +
             'Elapsed time: ' + str(int(elapse_time)) + 
             ', Speed(s/batch): ' + str(elapse_time / step) +
             '\n\n'

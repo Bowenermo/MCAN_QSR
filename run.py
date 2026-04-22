@@ -37,6 +37,8 @@ def parse_args():
                            'mcan_cmx_gridppm_small_fastv2',
                            'mcan_qsr_small',
                            'mcan_qsr_small_fastv2_auto',
+                           'mcan_qsr_noq_small',
+                           'mcan_qsr_noq_small_fastv2_auto',
                            'ban_4',
                            'ban_8',
                            'mfb',
@@ -59,6 +61,8 @@ def parse_args():
                            'mcan_cmx_gridppm_small_fastv2,'
                            'mcan_qsr_small,'
                            'mcan_qsr_small_fastv2_auto,'
+                           'mcan_qsr_noq_small,'
+                           'mcan_qsr_noq_small_fastv2_auto,'
                            'ban_4,'
                            'ban_8,'
                            'mfb,'
@@ -120,6 +124,11 @@ def parse_args():
                       choices=['True', 'False'],
                       help='True: use checkpoint to resume training,'
                            'False: start training with random init',
+                      type=str)
+
+    parser.add_argument('--RESUME_WEIGHTS_ONLY', dest='RESUME_WEIGHTS_ONLY',
+                      choices=['True', 'False'],
+                      help='True: load model weights from checkpoint but reset optimizer/lr schedule',
                       type=str)
 
     parser.add_argument('--CKPT_V', dest='CKPT_VERSION',
@@ -207,6 +216,10 @@ def parse_args():
     parser.add_argument('--BAD_LOG_INT', dest='BAD_SAMPLE_LOG_INTERVAL',
                       help='print broken-sample logs every N skips after first occurrence',
                       type=int)
+
+    parser.add_argument('--SUBSET_RATIO', dest='DATA_SUBSET_RATIO',
+                      help='use a subset ratio of current split for quick runs, e.g. 0.01 for 1%',
+                      type=float)
 
 
     args = parser.parse_args()

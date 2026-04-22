@@ -29,6 +29,8 @@ class BaseCfgs(PATH):
 
         # Use checkpoint to resume training
         self.RESUME = False
+        # If True with RESUME, only load model weights and reinitialize optimizer/lr schedule.
+        self.RESUME_WEIGHTS_ONLY = False
 
         # Resume training version or testing version
         self.CKPT_VERSION = self.VERSION
@@ -153,6 +155,10 @@ class BaseCfgs(PATH):
         # Print detailed broken-sample logs at this interval after first occurrence.
         self.BAD_SAMPLE_LOG_INTERVAL = 100
 
+        # Use a fraction of dataset samples for quick experiments/debugging.
+        # 1.0 means full data; 0.01 means 1% data.
+        self.DATA_SUBSET_RATIO = 1.0
+
 
         # --------------------------
         # ---- Optimizer Params ----
@@ -224,6 +230,7 @@ class BaseCfgs(PATH):
             'EVAL_EVERY_EPOCH',
             'TEST_SAVE_PRED',
             'RESUME',
+            'RESUME_WEIGHTS_ONLY',
             'PIN_MEM',
             'VERBOSE',
             'SKIP_BAD_FEAT',
@@ -259,6 +266,7 @@ class BaseCfgs(PATH):
 
     def proc(self):
         assert self.RUN_MODE in ['train', 'val', 'test']
+        assert 0 < float(getattr(self, 'DATA_SUBSET_RATIO', 1.0)) <= 1.0
 
         # ------------ Devices setup
         os.environ['CUDA_VISIBLE_DEVICES'] = self.GPU

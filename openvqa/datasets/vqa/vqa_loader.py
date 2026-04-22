@@ -15,6 +15,7 @@ class DataSet(BaseDataSet):
         super(DataSet, self).__init__()
         self.__C = __C
         self.use_raw_image_input = bool(getattr(__C, 'USE_RAW_IMAGE_INPUT', False))
+        self.data_subset_ratio = float(getattr(__C, 'DATA_SUBSET_RATIO', 1.0))
 
         # --------------------------
         # ---- Raw data loading ----
@@ -49,6 +50,8 @@ class DataSet(BaseDataSet):
             self.ques_list += json.load(open(__C.RAW_PATH[__C.DATASET][split], 'r'))['questions']
             if __C.RUN_MODE in ['train']:
                 self.ans_list += json.load(open(__C.RAW_PATH[__C.DATASET][split + '-anno'], 'r'))['annotations']
+
+        self._apply_subset_ratio()
 
         # Define run data size
         if __C.RUN_MODE in ['train']:
@@ -102,6 +105,23 @@ class DataSet(BaseDataSet):
         self.skip_raw_image_count = 0
         self.skip_feat_file_count = 0
         self._reported_broken_iids = set()
+
+    def _apply_subset_ratio(self):
+        # Keep validation/test full-size by default.
+        if self.__C.RUN_MODE not in ['train']:
+            return
+
+        if self.data_subset_ratio >= 1.0:
+            return
+
+        total = len(self.ans_list)
+        keep = max(1, int(total * self.data_subset_ratio))
+        rng = np.random.RandomState(int(self.__C.SEED))
+        select_idx = np.sort(rng.choice(total, size=keep, replace=False))
+        self.ans_list = [self.ans_list[i] for i in select_idx]
+        print(' ========== DATA_SUBSET_RATIO(train): {:.4f} -> {} / {}'.format(
+            self.data_subset_ratio, keep, total
+        ))
 
 
     def __getitem__(self, idx):
