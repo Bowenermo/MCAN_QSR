@@ -42,6 +42,13 @@ class BaseCfgs(PATH):
         # Print loss every iteration
         self.VERBOSE = True
 
+        # If True, skip broken visual feature files during data loading.
+        # If False, training stops at first broken file.
+        self.SKIP_BAD_FEAT = False
+
+        # Max retries when skipping broken features in one sample fetch.
+        self.MAX_BAD_FEAT_RETRY = 20
+
 
         # ------------------------------
         # ---- Data Provider Params ----
@@ -68,6 +75,17 @@ class BaseCfgs(PATH):
         # A external method to set train split
         # will override the SPLIT['train']
         self.TRAIN_SPLIT = 'train'
+
+        # Optional override for VQA feature root.
+        # Expected folder structure:
+        #   <root>/train2014/*.npz
+        #   <root>/val2014/*.npz
+        #   <root>/test2015/*.npz
+        # Keep empty to use the default region-based features.
+        self.VQA_FEAT_ROOT = ''
+
+        # If True, VQA loader reads raw images directly instead of .npz features.
+        self.USE_RAW_IMAGE_INPUT = False
 
         # Set True to use pretrained GloVe word embedding
         # (GloVe: spaCy https://spacy.io/)
@@ -106,11 +124,34 @@ class BaseCfgs(PATH):
         # (Warning: pin memory can accelerate GPU loading but may
         # increase the CPU memory usage when NUM_WORKS is big)
         self.PIN_MEM = True
+        self.PERSISTENT_WORKERS = True
+        self.PREFETCH_FACTOR = 4
 
         # Large model can not training with batch size 64
         # Gradient accumulate can split batch to reduce gpu memory usage
         # (Warning: BATCH_SIZE should be divided by GRAD_ACCU_STEPS)
         self.GRAD_ACCU_STEPS = 1
+
+        # mcan_lvprune: optional warm-start from MCAN .pkl (see train_engine)
+        self.PRUNE_INIT_CKPT = ''
+        # mcan_lvprune: if True, only train submodules whose name contains PRUNE_TRAIN_NAME_SUBSTR (set in mcan_lvprune cfg)
+        self.FREEZE_BACKBONE = False
+
+        # If True, enable mixed precision training (AMP) in train_engine.
+        self.USE_AMP = False
+
+        # cuDNN speed/reproducibility knobs.
+        # Keep deterministic by default; set BENCHMARK=True and DETERMINISTIC=False
+        # for maximum throughput in fixed-shape training.
+        self.CUDNN_BENCHMARK = False
+        self.CUDNN_DETERMINISTIC = True
+
+        # If True, compute and accumulate grad norm for every parameter each step.
+        # This is expensive and disabled by default for speed.
+        self.TRACK_GRAD_NORM = False
+
+        # Print detailed broken-sample logs at this interval after first occurrence.
+        self.BAD_SAMPLE_LOG_INTERVAL = 100
 
 
         # --------------------------
@@ -185,6 +226,13 @@ class BaseCfgs(PATH):
             'RESUME',
             'PIN_MEM',
             'VERBOSE',
+            'SKIP_BAD_FEAT',
+            'FREEZE_BACKBONE',
+            'USE_AMP',
+            'PERSISTENT_WORKERS',
+            'CUDNN_BENCHMARK',
+            'CUDNN_DETERMINISTIC',
+            'TRACK_GRAD_NORM',
         ]
 
         for arg in dir(args):
@@ -218,6 +266,18 @@ class BaseCfgs(PATH):
         self.DEVICES = [_ for _ in range(self.N_GPU)]
         torch.set_num_threads(2)
 
+        # ------------ Optional feature-path override / raw-image mode
+        if self.DATASET == 'vqa':
+            if bool(getattr(self, 'USE_RAW_IMAGE_INPUT', False)):
+                self.FEATS_PATH['vqa']['train'] = self.DATA_PATH['vqa'] + '/raw/train2014'
+                self.FEATS_PATH['vqa']['val'] = self.DATA_PATH['vqa'] + '/raw/val2014'
+                self.FEATS_PATH['vqa']['test'] = self.DATA_PATH['vqa'] + '/raw/test2015'
+            elif isinstance(self.VQA_FEAT_ROOT, str) and self.VQA_FEAT_ROOT.strip() != '':
+                vqa_feat_root = self.VQA_FEAT_ROOT.rstrip('/')
+                self.FEATS_PATH['vqa']['train'] = vqa_feat_root + '/train2014'
+                self.FEATS_PATH['vqa']['val'] = vqa_feat_root + '/val2014'
+                self.FEATS_PATH['vqa']['test'] = vqa_feat_root + '/test2015'
+
 
         # ------------ Path check
         self.check_path(self.DATASET)
@@ -234,7 +294,9 @@ class BaseCfgs(PATH):
             torch.cuda.manual_seed(self.SEED)
         else:
             torch.cuda.manual_seed_all(self.SEED)
-        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.deterministic = bool(getattr(self, 'CUDNN_DETERMINISTIC', True))
+        torch.backends.cudnn.benchmark = bool(getattr(self, 'CUDNN_BENCHMARK', False)) and \
+            (not torch.backends.cudnn.deterministic)
 
         # fix numpy seed
         np.random.seed(self.SEED)

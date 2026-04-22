@@ -23,6 +23,20 @@ def parse_args():
                       choices=[
                            'mcan_small',
                            'mcan_large',
+                           'mcan_small_patch',
+                           'mcan_large_patch',
+                           'mcan_lvprune_small',
+                           'mcan_lvprune_large',
+                           'mcan_lvprune_small_patch',
+                           'mcan_lvprune_large_patch',
+                           'mcan_convmixer_e2e_small',
+                           'mcan_convmixer_e2e_small_fast',
+                           'mcan_convmixer_p12_small',
+                           'mcan_convmixer_p123_small',
+                           'mcan_cmx_gridppm_small',
+                           'mcan_cmx_gridppm_small_fastv2',
+                           'mcan_qsr_small',
+                           'mcan_qsr_small_fastv2_auto',
                            'ban_4',
                            'ban_8',
                            'mfb',
@@ -35,6 +49,16 @@ def parse_args():
                       help='{'
                            'mcan_small,'
                            'mcan_large,'
+                           'mcan_small_patch,'
+                           'mcan_large_patch,'
+                           'mcan_convmixer_e2e_small,'
+                           'mcan_convmixer_e2e_small_fast,'
+                           'mcan_convmixer_p12_small,'
+                           'mcan_convmixer_p123_small,'
+                           'mcan_cmx_gridppm_small,'
+                           'mcan_cmx_gridppm_small_fastv2,'
+                           'mcan_qsr_small,'
+                           'mcan_qsr_small_fastv2_auto,'
                            'ban_4,'
                            'ban_8,'
                            'mfb,'
@@ -127,10 +151,62 @@ def parse_args():
                       help='True: use pin memory, False: not use pin memory',
                       type=str)
 
+    parser.add_argument('--PERSISTW', dest='PERSISTENT_WORKERS',
+                      choices=['True', 'False'],
+                      help='True: keep dataloader workers alive across epochs',
+                      type=str)
+
+    parser.add_argument('--PREFETCH', dest='PREFETCH_FACTOR',
+                      help='dataloader prefetch factor (num_workers > 0)',
+                      type=int)
+
     parser.add_argument('--VERB', dest='VERBOSE',
                       choices=['True', 'False'],
                       help='True: verbose print, False: simple print',
                       type=str)
+
+    parser.add_argument('--SKIP_BAD_FEAT', dest='SKIP_BAD_FEAT',
+                      choices=['True', 'False'],
+                      help='True: skip broken feature files at runtime, False: raise error',
+                      type=str)
+
+    parser.add_argument('--VQA_FEAT_ROOT', dest='VQA_FEAT_ROOT',
+                      help='override VQA visual feature root path; '
+                           'expects train2014/ val2014/ test2015 subfolders',
+                      type=str)
+
+    parser.add_argument('--PRUNE_INIT_CKPT', dest='PRUNE_INIT_CKPT',
+                      help='(mcan_lvprune) load MCAN checkpoint into backbone with strict=False before train',
+                      type=str)
+
+    parser.add_argument('--FREEZE', dest='FREEZE_BACKBONE',
+                      choices=['True', 'False'],
+                      help='(mcan_lvprune) True: train only lv_gate modules',
+                      type=str)
+
+    parser.add_argument('--AMP', dest='USE_AMP',
+                      choices=['True', 'False'],
+                      help='True: enable mixed precision training (AMP)',
+                      type=str)
+
+    parser.add_argument('--CUDNN_BENCHMARK', dest='CUDNN_BENCHMARK',
+                      choices=['True', 'False'],
+                      help='True: enable cuDNN benchmark for speed on fixed input shapes',
+                      type=str)
+
+    parser.add_argument('--CUDNN_DETERMINISTIC', dest='CUDNN_DETERMINISTIC',
+                      choices=['True', 'False'],
+                      help='True: deterministic cuDNN kernels (slower but reproducible)',
+                      type=str)
+
+    parser.add_argument('--TRACK_GRAD_NORM', dest='TRACK_GRAD_NORM',
+                      choices=['True', 'False'],
+                      help='True: compute per-parameter grad norm each step (slower)',
+                      type=str)
+
+    parser.add_argument('--BAD_LOG_INT', dest='BAD_SAMPLE_LOG_INTERVAL',
+                      help='print broken-sample logs every N skips after first occurrence',
+                      type=int)
 
 
     args = parser.parse_args()
@@ -143,7 +219,7 @@ if __name__ == '__main__':
 
     cfg_file = "configs/{}/{}.yml".format(args.DATASET, args.MODEL)
     with open(cfg_file, 'r') as f:
-        yaml_dict = yaml.load(f)
+        yaml_dict = yaml.safe_load(f)
 
     __C = CfgLoader(yaml_dict['MODEL_USE']).load()
     args = __C.str_to_bool(args)

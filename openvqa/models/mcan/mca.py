@@ -71,7 +71,7 @@ class MHAtt(nn.Module):
         ) / math.sqrt(d_k)
 
         if mask is not None:
-            scores = scores.masked_fill(mask, -1e9)
+            scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
 
         att_map = F.softmax(scores, dim=-1)
         att_map = self.dropout(att_map)

@@ -1,22 +1,17 @@
 # --------------------------------------------------------
-# OpenVQA
-# Written by Yuhao Cui https://github.com/cuiyuhao1996
+# MCAN + LVPruning — separate Net class (does not modify mcan/net.py)
 # --------------------------------------------------------
 
 from openvqa.utils.make_mask import make_mask
-from openvqa.ops.fc import FC, MLP
+from openvqa.ops.fc import MLP
 from openvqa.ops.layer_norm import LayerNorm
-from openvqa.models.mcan.mca import MCA_ED
+from openvqa.models.mcan_lvprune.mca import MCA_ED_LV
 from openvqa.models.mcan.adapter import Adapter
 
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
 
-
-# ------------------------------
-# ---- Flatten the sequence ----
-# ------------------------------
 
 class AttFlat(nn.Module):
     def __init__(self, __C):
@@ -57,9 +52,16 @@ class AttFlat(nn.Module):
         return x_atted
 
 
-# -------------------------
-# ---- Main MCAN Model ----
-# -------------------------
+def _maybe_freeze_backbone(net, __C):
+    if not getattr(__C, 'FREEZE_BACKBONE', False):
+        return
+    substr = getattr(__C, 'PRUNE_TRAIN_NAME_SUBSTR', 'lv_gate')
+    for name, p in net.named_parameters():
+        if substr in name:
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
+
 
 class Net(nn.Module):
     def __init__(self, __C, pretrained_emb, token_size, answer_size):
@@ -71,7 +73,6 @@ class Net(nn.Module):
             embedding_dim=__C.WORD_EMBED_SIZE
         )
 
-        # Loading the GloVe embedding weights
         if __C.USE_GLOVE:
             self.embedding.weight.data.copy_(torch.from_numpy(pretrained_emb))
 
@@ -83,50 +84,38 @@ class Net(nn.Module):
         )
 
         self.adapter = Adapter(__C)
+        self.backbone = MCA_ED_LV(__C)
 
-        self.backbone = MCA_ED(__C)
-
-        # Flatten to vector
         self.attflat_img = AttFlat(__C)
         self.attflat_lang = AttFlat(__C)
 
-        # Classification layers
         self.proj_norm = LayerNorm(__C.FLAT_OUT_SIZE)
         self.proj = nn.Linear(__C.FLAT_OUT_SIZE, answer_size)
 
+        _maybe_freeze_backbone(self, __C)
 
     def forward(self, frcn_feat, grid_feat, bbox_feat, ques_ix):
-
-        # Pre-process Language Feature
         lang_feat_mask = make_mask(ques_ix.unsqueeze(2))
         lang_feat = self.embedding(ques_ix)
         lang_feat, _ = self.lstm(lang_feat)
 
         img_feat, img_feat_mask = self.adapter(frcn_feat, grid_feat, bbox_feat)
 
-        # Backbone Framework
-        lang_feat, img_feat = self.backbone(
+        lang_feat, img_feat, ratio_loss = self.backbone(
             lang_feat,
             img_feat,
             lang_feat_mask,
             img_feat_mask
         )
 
-        # Flatten to vector
-        lang_feat = self.attflat_lang(
-            lang_feat,
-            lang_feat_mask
-        )
+        lang_vec = self.attflat_lang(lang_feat, lang_feat_mask)
+        img_vec = self.attflat_img(img_feat, img_feat_mask)
 
-        img_feat = self.attflat_img(
-            img_feat,
-            img_feat_mask
-        )
-
-        # Classification layers
-        proj_feat = lang_feat + img_feat
+        proj_feat = lang_vec + img_vec
         proj_feat = self.proj_norm(proj_feat)
         proj_feat = self.proj(proj_feat)
 
+        pl = float(getattr(self.__C, 'PRUNE_LAMBDA', 0.0))
+        if pl > 0.0 and self.training:
+            return proj_feat, pl * ratio_loss
         return proj_feat
-

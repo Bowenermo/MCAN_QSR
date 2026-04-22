@@ -22,7 +22,8 @@ class WarmupOptimizer(object):
 
         rate = self.rate()
         for p in self.optimizer.param_groups:
-            p['lr'] = rate
+            lr_scale = p['lr_scale'] if 'lr_scale' in p else 1.0
+            p['lr'] = rate * lr_scale
         self._rate = rate
 
         self.optimizer.step()
@@ -53,7 +54,10 @@ def get_optim(__C, model, data_size, lr_base=None):
         lr_base = __C.LR_BASE
 
     std_optim = getattr(Optim, __C.OPT)
-    params = filter(lambda p: p.requires_grad, model.parameters())
+    if hasattr(model, 'get_optim_groups'):
+        params = model.get_optim_groups(__C)
+    else:
+        params = filter(lambda p: p.requires_grad, model.parameters())
     eval_str = 'params, lr=0'
     for key in __C.OPT_PARAMS:
         eval_str += ' ,' + key + '=' + str(__C.OPT_PARAMS[key])

@@ -92,6 +92,8 @@ def test_engine(__C, dataset, state_dict=None, validation=False):
             bbox_feat_iter,
             ques_ix_iter
         )
+        if isinstance(pred, tuple):
+            pred = pred[0]
         pred_np = pred.cpu().data.numpy()
         pred_argmax = np.argmax(pred_np, axis=1)
 

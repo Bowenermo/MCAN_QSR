@@ -5,6 +5,8 @@
 
 import numpy as np
 import glob, json, re, en_vectors_web_lg
+import torch
+import os
 from openvqa.core.base_dataset import BaseDataSet
 from openvqa.utils.ans_punct import prep_ans
 
@@ -12,16 +14,19 @@ class DataSet(BaseDataSet):
     def __init__(self, __C):
         super(DataSet, self).__init__()
         self.__C = __C
+        self.use_raw_image_input = bool(getattr(__C, 'USE_RAW_IMAGE_INPUT', False))
 
         # --------------------------
         # ---- Raw data loading ----
         # --------------------------
 
         # Loading all image paths
-        frcn_feat_path_list = \
-            glob.glob(__C.FEATS_PATH[__C.DATASET]['train'] + '/*.npz') + \
-            glob.glob(__C.FEATS_PATH[__C.DATASET]['val'] + '/*.npz') + \
-            glob.glob(__C.FEATS_PATH[__C.DATASET]['test'] + '/*.npz')
+        frcn_feat_path_list = []
+        if not self.use_raw_image_input:
+            frcn_feat_path_list = \
+                glob.glob(__C.FEATS_PATH[__C.DATASET]['train'] + '/*.npz') + \
+                glob.glob(__C.FEATS_PATH[__C.DATASET]['val'] + '/*.npz') + \
+                glob.glob(__C.FEATS_PATH[__C.DATASET]['test'] + '/*.npz')
 
         # Loading question word list
         stat_ques_list = \
@@ -58,8 +63,25 @@ class DataSet(BaseDataSet):
         # ---- Data statistic ----
         # ------------------------
 
-        # {image id} -> {image feature absolutely path}
-        self.iid_to_frcn_feat_path = self.img_feat_path_load(frcn_feat_path_list)
+        if self.use_raw_image_input:
+            from torchvision import transforms
+            self.raw_image_transform = transforms.Compose([
+                transforms.Resize((__C.RAW_IMAGE_INPUT_SIZE, __C.RAW_IMAGE_INPUT_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=tuple(__C.RAW_IMAGE_MEAN),
+                    std=tuple(__C.RAW_IMAGE_STD)
+                ),
+            ])
+
+            raw_img_path_list = \
+                glob.glob(__C.DATA_PATH['vqa'] + '/raw/train2014/*.jpg') + \
+                glob.glob(__C.DATA_PATH['vqa'] + '/raw/val2014/*.jpg') + \
+                glob.glob(__C.DATA_PATH['vqa'] + '/raw/test2015/*.jpg')
+            self.iid_to_img_path = self.img_feat_path_load(raw_img_path_list)
+        else:
+            # {image id} -> {image feature absolutely path}
+            self.iid_to_frcn_feat_path = self.img_feat_path_load(frcn_feat_path_list)
 
         # {question id} -> {question}
         self.qid_to_ques = self.ques_load(self.ques_list)
@@ -76,6 +98,75 @@ class DataSet(BaseDataSet):
         print(' ========== Answer token vocab size (occur more than {} times):'.format(8), self.ans_size)
         print('Finished!')
         print('')
+        self.skip_sample_count = 0
+        self.skip_raw_image_count = 0
+        self.skip_feat_file_count = 0
+        self._reported_broken_iids = set()
+
+
+    def __getitem__(self, idx):
+        max_retry = int(getattr(self.__C, 'MAX_BAD_FEAT_RETRY', 20))
+        # In raw-image mode, keep training robust by default.
+        skip_bad_feat = bool(getattr(self.__C, 'SKIP_BAD_FEAT', False)) or self.use_raw_image_input
+
+        cur_idx = idx
+        for retry in range(max_retry + 1):
+            iid = 'unknown'
+            try:
+                ques_ix_iter, ans_iter, iid = self.load_ques_ans(cur_idx)
+                frcn_feat_iter, grid_feat_iter, bbox_feat_iter = self.load_img_feats(cur_idx, iid)
+
+                return \
+                    torch.from_numpy(frcn_feat_iter), \
+                    torch.from_numpy(grid_feat_iter), \
+                    torch.from_numpy(bbox_feat_iter), \
+                    torch.from_numpy(ques_ix_iter), \
+                    torch.from_numpy(ans_iter)
+            except Exception as err:
+                if not skip_bad_feat:
+                    raise
+
+                err_msg = repr(err)
+                self.skip_sample_count += 1
+                if 'raw image' in err_msg:
+                    self.skip_raw_image_count += 1
+                else:
+                    self.skip_feat_file_count += 1
+
+                worker_info = torch.utils.data.get_worker_info()
+                worker_id = worker_info.id if worker_info is not None else 0
+                pid = os.getpid()
+
+                log_interval = int(getattr(self.__C, 'BAD_SAMPLE_LOG_INTERVAL', 100))
+                iid_key = iid
+                first_seen = iid_key not in self._reported_broken_iids
+                if first_seen:
+                    self._reported_broken_iids.add(iid_key)
+                if first_seen or (log_interval > 0 and self.skip_sample_count % log_interval == 0):
+                    print(
+                        "[WARN][VQA DataSet] skip broken sample idx={} retry={}/{} "
+                        "| worker={} pid={} | skipped_total={} raw_image_skipped={} feat_skipped={} "
+                        "| unique_broken_iid={} | iid={} | err={}".format(
+                            cur_idx,
+                            retry + 1,
+                            max_retry + 1,
+                            worker_id,
+                            pid,
+                            self.skip_sample_count,
+                            self.skip_raw_image_count,
+                            self.skip_feat_file_count,
+                            len(self._reported_broken_iids),
+                            iid_key,
+                            err_msg
+                        ),
+                        flush=True
+                    )
+                cur_idx = (cur_idx + 1) % self.data_size
+
+        raise RuntimeError(
+            "Exceeded MAX_BAD_FEAT_RETRY={} while fetching data. "
+            "Set SKIP_BAD_FEAT=False to fail-fast and inspect exact traceback.".format(max_retry)
+        )
 
 
 
@@ -191,7 +282,54 @@ class DataSet(BaseDataSet):
 
 
     def load_img_feats(self, idx, iid):
-        frcn_feat = np.load(self.iid_to_frcn_feat_path[iid])
+        if self.use_raw_image_input:
+            from PIL import Image
+            if iid not in self.iid_to_img_path:
+                raise RuntimeError("Raw image file not found for iid={}".format(iid))
+
+            img_path = self.iid_to_img_path[iid]
+            try:
+                with Image.open(img_path) as img:
+                    img = img.convert('RGB')
+                    img_tensor = self.raw_image_transform(img)
+            except Exception as err:
+                raise RuntimeError(
+                    "Failed to load raw image: {} | iid={} | err={}".format(img_path, iid, repr(err))
+                )
+
+            # Keep interface unchanged for training engine.
+            frcn_feat_iter = img_tensor.numpy().astype(np.float32)
+            grid_feat_iter = np.zeros(1, dtype=np.float32)
+            bbox_feat_iter = np.zeros((1, 4), dtype=np.float32)
+            return frcn_feat_iter, grid_feat_iter, bbox_feat_iter
+
+        feat_path = self.iid_to_frcn_feat_path[iid]
+        try:
+            frcn_feat = np.load(feat_path)
+        except Exception as err:
+            raise RuntimeError(
+                "Failed to load npz feature file: {} | iid={} | err={}".format(feat_path, iid, repr(err))
+            )
+
+        if 'x' not in frcn_feat.files:
+            raise RuntimeError(
+                "Feature file missing key 'x': {} | iid={} | available_keys={}".format(
+                    feat_path, iid, frcn_feat.files
+                )
+            )
+        if 'bbox' not in frcn_feat.files:
+            raise RuntimeError(
+                "Feature file missing key 'bbox': {} | iid={} | available_keys={}".format(
+                    feat_path, iid, frcn_feat.files
+                )
+            )
+        if 'image_h' not in frcn_feat.files or 'image_w' not in frcn_feat.files:
+            raise RuntimeError(
+                "Feature file missing image size keys ('image_h'/'image_w'): {} | iid={} | available_keys={}".format(
+                    feat_path, iid, frcn_feat.files
+                )
+            )
+
         frcn_feat_x = frcn_feat['x'].transpose((1, 0))
         frcn_feat_iter = self.proc_img_feat(frcn_feat_x, img_feat_pad_size=self.__C.FEAT_SIZE['vqa']['FRCN_FEAT_SIZE'][0])
 

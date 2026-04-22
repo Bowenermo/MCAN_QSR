@@ -116,15 +116,27 @@ class PATH:
     def check_path(self, dataset=None):
         print('Checking dataset ........')
 
+        # In end-to-end VQA raw-image mode, test split images/questions are optional
+        # for RUN_MODE='train'. This matches the common train->val workflow.
+        allow_missing_vqa_test = (
+            getattr(self, 'DATASET', '') == 'vqa' and
+            bool(getattr(self, 'USE_RAW_IMAGE_INPUT', False)) and
+            getattr(self, 'RUN_MODE', '') == 'train'
+        )
+
 
         if dataset:
             for item in self.FEATS_PATH[dataset]:
                 if not os.path.exists(self.FEATS_PATH[dataset][item]):
+                    if allow_missing_vqa_test and dataset == 'vqa' and item == 'test':
+                        continue
                     print(self.FEATS_PATH[dataset][item], 'NOT EXIST')
                     exit(-1)
 
             for item in self.RAW_PATH[dataset]:
                 if not os.path.exists(self.RAW_PATH[dataset][item]):
+                    if allow_missing_vqa_test and dataset == 'vqa' and item == 'test':
+                        continue
                     print(self.RAW_PATH[dataset][item], 'NOT EXIST')
                     exit(-1)
 

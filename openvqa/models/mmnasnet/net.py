@@ -38,9 +38,10 @@ class AttFlat(nn.Module):
 
     def forward(self, x, x_mask):
         att = self.mlp(x)
+        mask_fill_value = torch.finfo(att.dtype).min
         att = att.masked_fill(
             x_mask.squeeze(1).squeeze(1).unsqueeze(2),
-            -1e9
+            mask_fill_value
         )
         att = F.softmax(att, dim=1)
 

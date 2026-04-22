@@ -48,7 +48,7 @@ class RelMHAtt(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(d_k)
         scores = torch.log(torch.clamp(r, min=1e-6)) + scores
         if mask is not None:
-            scores = scores.masked_fill(mask, -1e9)
+            scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
         att_map = F.softmax(scores, dim=-1)
         att_map = self.dropout(att_map)
         atted = torch.matmul(att_map, v)
@@ -115,7 +115,7 @@ class MHAtt(nn.Module):
         ) / math.sqrt(d_k)
 
         if mask is not None:
-            scores = scores.masked_fill(mask, -1e9)
+            scores = scores.masked_fill(mask, torch.finfo(scores.dtype).min)
 
         att_map = F.softmax(scores, dim=-1)
         att_map = self.dropout(att_map)

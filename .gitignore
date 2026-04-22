@@ -154,3 +154,32 @@ dmypy.json
 .vscode/
 .vs
 .vs/
+
+# ---- local large files ----
+ckpts/
+data/
+results/
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.h5
+*.npz
+*.npy
+*.zip
+*.tar
+*.tar.gz
+*.7z
+*.log
+
+# local environments
+.venv/
+.venv310/
+venv/
+ENV/
+env/
+
+# cache/temp
+__pycache__/
+*.pyc
+*.pyo
