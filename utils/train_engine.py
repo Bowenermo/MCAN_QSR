@@ -77,6 +77,17 @@ def _auto_tune_loader_by_vram(__C):
         )
     )
 
+    # Optional model-level overrides from selected rule.
+    if 'cmx_grad_checkpoint' in selected:
+        old_gc = bool(getattr(__C, 'CMX_GRAD_CHECKPOINT', False))
+        __C.CMX_GRAD_CHECKPOINT = bool(selected.get('cmx_grad_checkpoint'))
+        print(
+            '[AUTO_TUNE] CMX_GRAD_CHECKPOINT {}->{}'.format(
+                old_gc,
+                bool(__C.CMX_GRAD_CHECKPOINT)
+            )
+        )
+
 
 def train_engine(__C, dataset, dataset_eval=None):
 
@@ -310,7 +321,7 @@ def train_engine(__C, dataset, dataset_eval=None):
                     mode_str,
                     loss_tmp / __C.SUB_BATCH_SIZE,
                     optim._rate
-                ), end='          ')
+                ), end='          ', flush=True)
 
             # Gradient norm clipping
             if __C.GRAD_NORM_CLIP > 0:
